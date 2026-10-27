@@ -1,0 +1,13 @@
+# =====================================================================================
+# FILE LOCATION: violation-validation-framework/frontend/.dockerignore
+#   (inside frontend/, in the same folder as frontend/Dockerfile)
+# =====================================================================================
+
+.git
+node_modules
+.next
+npm-debug.log*
+.env
+.env.*
+Dockerfile
+.dockerignore

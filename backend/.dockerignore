@@ -1,0 +1,20 @@
+# =====================================================================================
+# FILE LOCATION: violation-validation-framework/backend/.dockerignore
+#   (inside backend/, in the same folder as backend/Dockerfile)
+# =====================================================================================
+
+.git
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+tests/
+.env
+.env.*
+# never bake secrets into an image
+credentials.json
+*.pem
+*.key

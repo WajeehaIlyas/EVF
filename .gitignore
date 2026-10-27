@@ -1,0 +1,15 @@
+# FILE LOCATION: violation-validation-framework/.gitignore  (project root)
+
+.env
+data/
+secrets/*
+!secrets/.gitkeep
+node_modules/
+.next/
+__pycache__/
+.venv/
+credentials.json
+*.tgz
+*.tar.gz
+*.tar
+*.zip

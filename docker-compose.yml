@@ -1,0 +1,257 @@
+# AEVAF - full stack.   Start:  docker compose up -d --build     Open:  http://localhost:8080
+#
+# Every ${VAR:-default} below falls back to a working default when no .env file exists.
+# Only nginx is published to the network; the database and Redis are never exposed.
+name: aevaf
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-hardening: &hardening
+  init: true
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: *default-logging
+
+x-backend-build: &backend-build
+  context: ./backend
+  args:
+    PYTHON_VERSION: ${PYTHON_VERSION:-3.10}
+    INSTALL_FFMPEG: ${INSTALL_FFMPEG:-true}
+
+x-backend-env: &backend-env
+  ENVIRONMENT: ${ENVIRONMENT:-production}
+  DEBUG: "false"
+  DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-aevaf}:${POSTGRES_PASSWORD:-aevaf_change_me}@db:5432/${POSTGRES_DB:-aevaf}
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+  CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+  MEDIA_ROOT: /media
+  MEDIA_URL_PREFIX: /media
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+  CORS_ORIGINS: '${CORS_ORIGINS:-["http://localhost:8080","http://127.0.0.1:8080"]}'
+  # server-side folders the ingestion API/tasks may read (mounted below)
+  LOCAL_INGEST_ROOTS: '["/hot","/ingest"]'
+  GOOGLE_SERVICE_ACCOUNT_FILE: /run/aevaf-secrets/credentials.json
+  # hot-folder watcher
+  WATCH_ROOT: /hot
+  WATCH_SETTLE_SECONDS: ${WATCH_SETTLE_SECONDS:-3}
+  WATCH_USE_POLLING: ${WATCH_USE_POLLING:-false}
+  WATCH_POLL_INTERVAL_SECONDS: ${WATCH_POLL_INTERVAL_SECONDS:-5}
+  WATCH_SCAN_INTERVAL_MINUTES: ${WATCH_SCAN_INTERVAL_MINUTES:-10}
+  # scheduled SFTP sync (all optional)
+  SFTP_DEFAULT_HOST: ${SFTP_DEFAULT_HOST:-}
+  SFTP_DEFAULT_PORT: ${SFTP_DEFAULT_PORT:-22}
+  SFTP_DEFAULT_USERNAME: ${SFTP_DEFAULT_USERNAME:-}
+  SFTP_DEFAULT_PASSWORD: ${SFTP_DEFAULT_PASSWORD:-}
+  SFTP_DEFAULT_KEY_PATH: ${SFTP_DEFAULT_KEY_PATH:-}
+  SFTP_KNOWN_HOSTS_FILE: ${SFTP_KNOWN_HOSTS_FILE:-}
+  SFTP_ALLOW_UNKNOWN_HOSTS: ${SFTP_ALLOW_UNKNOWN_HOSTS:-false}
+  SFTP_REMOTE_PATH_TEMPLATE: ${SFTP_REMOTE_PATH_TEMPLATE:-/{site_code}/{feature}}
+  SFTP_SYNC_TARGETS: ${SFTP_SYNC_TARGETS:-}
+  SFTP_SYNC_INTERVAL_MINUTES: ${SFTP_SYNC_INTERVAL_MINUTES:-15}
+  CLEANUP_HOUR_UTC: ${CLEANUP_HOUR_UTC:-3}
+
+x-backend-mounts: &backend-mounts
+  - media_data:/media
+  - ${HOT_FOLDER_DIR:-./data/hot}:/hot:ro
+  - ${INGEST_DIR:-./data/ingest}:/ingest:ro
+  - ${SECRETS_DIR:-./secrets}:/run/aevaf-secrets:ro
+
+services:
+  # ---------------------------------------------------------------- PostgreSQL
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aevaf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aevaf_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-aevaf}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # --------------------------------------------------------------------- Redis
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    # noeviction: a task broker must never silently drop queued jobs when memory is tight
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  # ----------------------------------------------------------------- FastAPI API
+  backend:
+    <<: *hardening
+    build: *backend-build
+    image: aevaf-backend:${AEVAF_TAG:-latest}
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m
+    environment:
+      <<: *backend-env
+      RUN_DB_INIT: "1"          # creates missing tables before the server starts
+    volumes: *backend-mounts
+    ports:
+      # loopback only: gives you http://127.0.0.1:8000/docs without exposing the API publicly
+      - "${BACKEND_BIND:-127.0.0.1:8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [data, web]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 40s
+
+  # --------------------------------------------------------------- Celery worker
+  celery_worker:
+    <<: *hardening
+    build: *backend-build
+    image: aevaf-backend:${AEVAF_TAG:-latest}
+    command:
+      - celery
+      - -A
+      - app.core.celery_app:celery_app
+      - worker
+      - --loglevel=${CELERY_LOG_LEVEL:-INFO}
+      - --queues=ingestion,sftp,maintenance
+      - --concurrency=${CELERY_CONCURRENCY:-4}
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m
+    environment: *backend-env
+    volumes: *backend-mounts
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [data, web]          # web = outbound access to SFTP servers
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.core.celery_app:celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 > /dev/null"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
+  # ----------------------------------------------------- Celery beat (the scheduler)
+  # Exactly one instance: it queues the periodic SFTP syncs, hot-folder scans and cleanup.
+  celery_beat:
+    <<: *hardening
+    build: *backend-build
+    image: aevaf-backend:${AEVAF_TAG:-latest}
+    command:
+      - celery
+      - -A
+      - app.core.celery_app:celery_app
+      - beat
+      - --loglevel=${CELERY_LOG_LEVEL:-INFO}
+      - --schedule=/tmp/celerybeat-schedule
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    environment: *backend-env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [data]
+
+  # ------------------------------------------------------------ hot-folder watcher
+  directory_watcher:
+    <<: *hardening
+    build: *backend-build
+    image: aevaf-backend:${AEVAF_TAG:-latest}
+    command: ["python", "-m", "app.services.directory_watcher"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    environment: *backend-env
+    volumes:
+      - ${HOT_FOLDER_DIR:-./data/hot}:/hot:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [data]
+    healthcheck:
+      # the watcher touches this file every 30 s; unhealthy if it goes stale or the process died
+      test: ["CMD", "python", "-c", "import os, sys, time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/directory_watcher.heartbeat') < 120 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ------------------------------------------------------------------ Next.js UI
+  frontend:
+    <<: *hardening
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
+    image: aevaf-frontend:${AEVAF_TAG:-latest}
+    networks: [web]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ------------------------------------------------------------- reverse proxy
+  nginx:
+    <<: *hardening
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - media_data:/srv/media:ro
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    networks: [web]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/nginx-health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  data:
+    internal: true        # db, redis and the workers cannot be reached from, or reach, the internet
+  web: {}
+
+volumes:
+  postgres_data:
+  redis_data:
+  media_data:
