@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.v1 import classified_exports, site_browser
+from app.api.v1.auth import require_login
 from app.core.database import get_db
 from app.db.models import ArchivedEvent, Event, Site
 from app.db.schemas import normalize_feature
@@ -35,7 +36,7 @@ from app.services.analytics import analytics_for_sites, export_rows
 from app.services.xlsx_export import build_workbook
 from app.services.xlsx_import import ParsedRow, SheetResult, read_workbook
 
-router = APIRouter(prefix="/analytics", tags=["analytics"])
+router = APIRouter(prefix="/analytics", tags=["analytics"], dependencies=[Depends(require_login)])
 
 # One registration is enough: the zip-export and Sites-page routes hang off this router, so they
 # can never be "forgotten" when wiring the app. Their URLs all start with /analytics.
@@ -237,15 +238,3 @@ def import_xlsx(
 
     db.commit()
     return XlsxImportResult(sheets=results, added=total_added, updated=total_updated)
-
-
-# One router to register: the zip export and the Sites page endpoints are mounted here too, so they
-# live under /analytics (e.g. /analytics/browse/events, DELETE /analytics/sites/{id},
-# /analytics/classified-exports/...). Registering `analytics.router` is all that is needed.
-from app.api.v1 import classified_exports, site_browser  # noqa: E402
-
-router.include_router(classified_exports.router)
-router.include_router(site_browser.router)
-from app.api.v1 import auth  # noqa: E402
-
-router.include_router(auth.router)

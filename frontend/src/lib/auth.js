@@ -1,16 +1,20 @@
-/** The signed-in user, kept in this browser (localStorage). Nothing here is a secret from the user. */
+/**
+ * Who is signed in, for the top bar and the "go to /login" check. The real session is an HttpOnly
+ * cookie set by the server: scripts here cannot read it and it is not stored anywhere in the page.
+ * Only the username and the expiry time are remembered.
+ */
 const KEY = 'evf.auth';
 
 export function getAuth() {
   try {
     const value = JSON.parse(window.localStorage.getItem(KEY) || 'null');
-    if (value?.token && value.expiresAt * 1000 > Date.now()) return value;
+    if (value?.username && value.expiresAt * 1000 > Date.now()) return value;
   } catch { /* unreadable: treat as signed out */ }
   return null;
 }
 
-export function setAuth({ token, username, expiresAt }) {
-  try { window.localStorage.setItem(KEY, JSON.stringify({ token, username, expiresAt })); } catch { /* ignore */ }
+export function setAuth({ username, expiresAt }) {
+  try { window.localStorage.setItem(KEY, JSON.stringify({ username, expiresAt })); } catch { /* ignore */ }
 }
 
 export function clearAuth() {

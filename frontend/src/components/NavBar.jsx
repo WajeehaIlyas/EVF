@@ -3,6 +3,7 @@ import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 
 import { clearAuth, getAuth } from '../lib/auth';
+import { logout } from '../services/api';
 import { NAV_ITEMS, ROUTES } from '../lib/routes';
 
 const THEME_KEY = 'evf.theme';
@@ -23,7 +24,8 @@ export default function NavBar({ current }) {
 
   useEffect(() => { setUsername(getAuth()?.username || ''); }, []);
 
-  const signOut = () => {
+  const signOut = async () => {
+    await logout();
     clearAuth();
     router.replace('/login');
   };

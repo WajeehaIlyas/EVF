@@ -37,7 +37,7 @@ export default function LoginPage() {
     setError(null);
     try {
       const result = await login(username.trim(), password);
-      setAuth({ token: result.access_token, username: result.username, expiresAt: result.expires_at });
+      setAuth({ username: result.username, expiresAt: result.expires_at });
       await router.replace(destination());
     } catch (err) {
       setError(err?.response?.status === 401 ? 'Wrong username or password.' : getErrorMessage(err));

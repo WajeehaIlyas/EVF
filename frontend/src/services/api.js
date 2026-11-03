@@ -4,7 +4,7 @@
  */
 import axios from 'axios';
 
-import { clearAuth, getAuth } from '../lib/auth';
+import { clearAuth } from '../lib/auth';
 
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
@@ -13,15 +13,11 @@ const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 15000,
   headers: { 'Content-Type': 'application/json' },
+  withCredentials: true, // send the session cookie
 });
 
-// Every request carries the signed-in user's token. A 401 on anything but the login itself means
-// the session ended: forget it and go to the login page.
-api.interceptors.request.use((config) => {
-  const auth = typeof window !== 'undefined' ? getAuth() : null;
-  if (auth) config.headers.Authorization = `Bearer ${auth.token}`;
-  return config;
-});
+// The session is an HttpOnly cookie that the browser sends by itself. A 401 on anything but the
+// login itself means the session ended: forget the username and go to the login page.
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -36,10 +32,15 @@ api.interceptors.response.use(
   },
 );
 
-/** POST /analytics/auth/login -> { access_token, username, expires_at } */
+/** POST /analytics/auth/login -> sets the session cookie; returns { username, expires_at } */
 export async function login(username, password) {
   const { data } = await api.post('/analytics/auth/login', { username, password });
   return data;
+}
+
+/** POST /analytics/auth/logout: the server clears the session cookie. */
+export async function logout() {
+  try { await api.post('/analytics/auth/logout'); } catch { /* the cookie is gone or the server is away: fine */ }
 }
 
 /** Turn any Axios/FastAPI error into a short, human-readable message. */
