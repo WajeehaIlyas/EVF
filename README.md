@@ -4,67 +4,39 @@ Import traffic-violation events, review them (true positive / false positive / u
 analytics per site. Reviewed data can be exported as a classified zip or an `.xlsx` workbook.
 
 ## Features
+- **Login** – username and password; signing in opens the Home page.
+- **Home** – plain page linking to Sites, Analytics, Import data and Review.
 - **Import data** – upload event packages per site (images + JSON), or a labelled `.xlsx`.
 - **Review** – full-image viewer with a hover magnifier, keyboard shortcuts, make/model/colour checks.
-- **Sites** – search and revisit every event of a site, view the evidence, delete a site.
+  Choosing a site selects a feature that still has unreviewed events.
+- **Sites** – search and revisit every event of a site, view the evidence, download the site as
+  `.xlsx`, jump to its unreviewed events, delete a site.
 - **Analytics** – totals, TP/FP/unsure, clear/unclear images, precision (also excluding unclear FPs),
-  make/model/colour accuracy. Analytics stay available after events are removed from the site.
-- **Exports** – classified zip (`TP/{clear,unclear}`, `FP/{clear,unclear}`, `Unsure`) and `.xlsx`.
-- **Login** – username and password.
+  make/model/colour accuracy, per site and per feature. Available at any time, even mid-review, and
+  they stay after events are removed from the site.
+- **Exports** – classified zip (`TP/{clear,unclear}`, `FP/{clear,unclear}`, `Unsure`)
 
 ## Stack
-FastAPI + SQLAlchemy (backend) · Next.js (pages router) + Tailwind + axios (frontend) ·
-PostgreSQL (production) / SQLite (local development) · Celery for background ingestion.
+FastAPI + SQLAlchemy · Next.js (pages router) + Tailwind + axios · PostgreSQL 15 · Redis + Celery
+(background imports, folder watcher, scheduled jobs) · nginx reverse proxy · Docker Compose.
 
 ## Repository layout
 ```
-backend/    FastAPI app (app/), tests (tests/), pyproject.toml
-frontend/   Next.js app (src/pages, src/components, src/store, src/services, src/lib)
-docker-compose.yml   (if you use Docker)
-.env.example         copy to .env and fill in
+backend/             FastAPI app (app/), tests (tests/), Dockerfile, pyproject.toml
+frontend/            Next.js app (src/pages, src/components, src/store, src/services, src/lib)
+nginx/nginx.conf     reverse proxy: routing, rate limits, login check for /api, /media, /ws
+docker-compose.yml   the whole stack
+.env                 settings and passwords
+secrets/             credential files mounted into the backend
+data/                hot / ingest input folders
 ```
 
-## Run locally
-Backend:
-```bash
-cd backend
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
-export DATABASE_URL=sqlite:///./dev.db        # or your PostgreSQL URL
-export EVF_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
-python3 -m app.scripts.create_user <username>  # asks for a password (min. 8 characters)
-uvicorn app.main:app --reload --port 8000
-```
-Frontend:
-```bash
-cd frontend
-npm install
-NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1 npm run dev
-```
-Open http://localhost:3000 and sign in.
+## Security
+- Sign-in sets an HttpOnly session cookie. nginx checks it (`auth_request`) before serving `/api/`,
+  `/media/` and `/ws/`, so the API, event images and downloads all need a login. Only the page
+  shell, the sign-in call and the health probes are public. Sign-in is rate limited, and a username
+  is locked out for a few minutes after 8 wrong passwords.
+- Serve the site over HTTPS (terminate TLS in front of nginx, e.g. Caddy or a load balancer, and
+  keep `X-Forwarded-Proto`); the cookie then becomes HTTPS-only automatically.
+- Only nginx is published; the database and Redis are not reachable from outside Docker.
 
-With Docker, run the user script inside the backend container so it uses the real database:
-`docker compose exec <backend-service> python -m app.scripts.create_user <username>`
-
-## Configuration
-| Variable | Purpose |
-|---|---|
-| `DATABASE_URL` | Database connection string |
-| `EVF_SECRET_KEY` | Signs login tokens. Set a long random value in production |
-| `EVF_TOKEN_TTL_HOURS` | Login lifetime (default 12) |
-| `NEXT_PUBLIC_API_URL` | Public URL of the API, used by the browser |
-| `NEXT_PUBLIC_MEDIA_URL` | Optional: where event images are served from |
-
-## Tests
-```bash
-cd backend && pytest
-```
-
-## Users
-There is no sign-up page. An administrator creates or resets users with
-`python -m app.scripts.create_user <username>`.
-
-## Security notes
-- Sign-in uses an HttpOnly session cookie. nginx checks it (`auth_request`) before serving `/api/`, `/media/` and `/ws/`, so the API, event images and downloads all need a login. Only the page shell, the login call and the health probes are public.
-- Never commit `.env`, databases or uploaded images (see `.gitignore`).
-- Serve the site over HTTPS and keep the database port closed to the internet.
